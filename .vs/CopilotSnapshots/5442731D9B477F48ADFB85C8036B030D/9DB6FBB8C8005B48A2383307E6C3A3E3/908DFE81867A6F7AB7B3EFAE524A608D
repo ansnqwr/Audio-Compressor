@@ -1,0 +1,17 @@
+﻿using System;
+
+namespace AudioCompressor
+{
+    public class CompressionProgress
+    {
+        public double Percentage { get; set; }          // 0-100
+        public long BytesProcessed { get; set; }
+        public long TotalBytes { get; set; }
+        public double SpeedMBps { get; set; }           // ميغابايت في الثانية
+        public double CurrentCompressionRatio { get; set; } // نسبة الحجم الحالي/الأصلي (0-1)
+        public TimeSpan ElapsedTime { get; set; }
+        public TimeSpan EstimatedRemaining { get; set; }
+        public string ErrorMessage { get; set; }
+
+    }
+}

@@ -1,0 +1,266 @@
+﻿using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
+using AudioCompressor.Models;
+
+namespace AudioCompressor.Services
+{
+    public class CompressionResult
+    {
+        public long OriginalSize { get; set; }
+        public long CompressedSize { get; set; }
+        public double CompressionRatio { get; set; }
+        public TimeSpan ProcessTime { get; set; }
+    }
+
+    public class CompressionProgress
+    {
+        public double Percentage { get; set; }
+        public double SpeedMBPerSec { get; set; }
+        public double CurrentCompressionRatio { get; set; }
+        public TimeSpan TimeRemaining { get; set; }
+    }
+
+    public class AudioCompressorService
+    {
+        private CancellationTokenSource _cancellationSource;
+        private string _lastInputPath;
+        private string _lastBackupPath;
+
+        public void Cancel() => _cancellationSource?.Cancel();
+
+        public bool RestoreOriginalFile()
+        {
+            if (string.IsNullOrEmpty(_lastBackupPath) || string.IsNullOrEmpty(_lastInputPath))
+                return false;
+            if (!File.Exists(_lastBackupPath))
+                return false;
+
+            try
+            {
+                File.Copy(_lastBackupPath, _lastInputPath, true);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public async Task<CompressionResult> CompressAsync(
+            string inputPath,
+            string outputPath,
+            CompressionSettings settings,
+            IProgress<CompressionProgress> progress)
+        {
+            _cancellationSource = new CancellationTokenSource();
+            var token = _cancellationSource.Token;
+
+            _lastInputPath = inputPath;
+            _lastBackupPath = Path.Combine(Path.GetTempPath(), Path.GetFileName(inputPath) + ".bak");
+            try { File.Copy(inputPath, _lastBackupPath, true); } catch { }
+
+            var startTime = DateTime.Now;
+            long originalLength = new FileInfo(inputPath).Length;
+
+            try
+            {
+                return await Task.Run(() =>
+                {
+                    using (var reader = new AudioFileReader(inputPath))
+                    {
+                        var outFormat = new WaveFormat(settings.SampleRate, settings.BitDepth, settings.Channels);
+
+                        // build sample provider chain
+                        var sampleProvider = reader.ToSampleProvider();
+                        ISampleProvider resampled = sampleProvider;
+
+                        if (reader.WaveFormat.SampleRate != settings.SampleRate)
+                        {
+                            resampled = new WdlResamplingSampleProvider(resampled, settings.SampleRate);
+                        }
+
+                        if (resampled.WaveFormat.Channels != settings.Channels)
+                        {
+                            if (settings.Channels == 1) resampled = new StereoToMonoSampleProvider(resampled);
+                            else if (settings.Channels == 2) resampled = new MonoToStereoSampleProvider(resampled);
+                        }
+
+                        var waveProvider16 = resampled.ToWaveProvider16();
+
+                        if (settings.Algorithm == CompressionAlgorithm.MP3)
+                        {
+                            using (var writer = new NAudio.Lame.LameMP3FileWriter(outputPath, outFormat, settings.BitRate))
+                            {
+                                byte[] buffer = new byte[waveProvider16.WaveFormat.AverageBytesPerSecond];
+                                long totalBytesWritten = 0;
+                                long totalBytesRead = 0;
+                                int bytesRead;
+                                while ((bytesRead = waveProvider16.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    token.ThrowIfCancellationRequested();
+                                    writer.Write(buffer, 0, bytesRead);
+                                    totalBytesWritten += bytesRead;
+                                    totalBytesRead += bytesRead;
+
+                                    double percentage = originalLength > 0 ? (double)totalBytesRead / originalLength * 100 : 0;
+                                    var elapsed = DateTime.Now - startTime;
+                                    double speed = elapsed.TotalSeconds > 0 ? totalBytesWritten / 1024.0 / 1024.0 / elapsed.TotalSeconds : 0;
+                                    double ratio = totalBytesRead > 0 ? (double)totalBytesWritten / totalBytesRead : 0;
+                                    double bytesPerSec = elapsed.TotalSeconds > 0 ? totalBytesRead / elapsed.TotalSeconds : 0;
+                                    TimeSpan remaining = bytesPerSec > 0 ? TimeSpan.FromSeconds((originalLength - totalBytesRead) / bytesPerSec) : TimeSpan.Zero;
+
+                                    progress?.Report(new CompressionProgress
+                                    {
+                                        Percentage = percentage,
+                                        SpeedMBPerSec = speed,
+                                        CurrentCompressionRatio = ratio,
+                                        TimeRemaining = remaining
+                                    });
+                                }
+
+                                return new CompressionResult
+                                {
+                                    OriginalSize = originalLength,
+                                    CompressedSize = new FileInfo(outputPath).Length,
+                                    CompressionRatio = (double)new FileInfo(outputPath).Length / originalLength,
+                                    ProcessTime = DateTime.Now - startTime
+                                };
+                            }
+                        }
+                        else
+                        {
+                            WaveFormat targetFormat;
+
+                            switch (settings.Algorithm)
+                            {
+                                case CompressionAlgorithm.ADPCM:
+                                    targetFormat = new WaveFormat(settings.SampleRate, 4, settings.Channels);
+                                    break;
+                                case CompressionAlgorithm.DPCM:
+                                    targetFormat = new WaveFormat(settings.SampleRate, 8, settings.Channels);
+                                    break;
+                                case CompressionAlgorithm.MuLaw:
+                                    targetFormat = WaveFormat.CreateMuLawFormat(settings.SampleRate, settings.Channels);
+                                    break;
+                                default:
+                                    targetFormat = outFormat;
+                                    break;
+                            }
+
+                            using (var writer = new WaveFileWriter(outputPath, targetFormat))
+                            {
+                                byte[] buffer = new byte[waveProvider16.WaveFormat.AverageBytesPerSecond];
+                                int bytesRead;
+                                long totalBytesWritten = 0;
+                                while ((bytesRead = waveProvider16.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    token.ThrowIfCancellationRequested();
+                                    writer.Write(buffer, 0, bytesRead);
+                                    totalBytesWritten += bytesRead;
+
+                                    double percentage = originalLength > 0 ? (double)totalBytesWritten / originalLength * 100 : 0;
+                                    var elapsed = DateTime.Now - startTime;
+                                    double speed = elapsed.TotalSeconds > 0 ? totalBytesWritten / 1024.0 / 1024.0 / elapsed.TotalSeconds : 0;
+                                    double ratio = originalLength > 0 ? (double)totalBytesWritten / originalLength : 0;
+                                    double bytesPerSec = elapsed.TotalSeconds > 0 ? totalBytesWritten / elapsed.TotalSeconds : 0;
+                                    TimeSpan remaining = bytesPerSec > 0 ? TimeSpan.FromSeconds((originalLength - totalBytesWritten) / bytesPerSec) : TimeSpan.Zero;
+
+                                    progress?.Report(new CompressionProgress
+                                    {
+                                        Percentage = percentage,
+                                        SpeedMBPerSec = speed,
+                                        CurrentCompressionRatio = ratio,
+                                        TimeRemaining = remaining
+                                    });
+                                }
+
+                                return new CompressionResult
+                                {
+                                    OriginalSize = originalLength,
+                                    CompressedSize = new FileInfo(outputPath).Length,
+                                    CompressionRatio = (double)new FileInfo(outputPath).Length / originalLength,
+                                    ProcessTime = DateTime.Now - startTime
+                                };
+                            }
+                        }
+                    }
+                }, token);
+            }
+            finally
+            {
+                _cancellationSource?.Dispose();
+                _cancellationSource = null;
+            }
+        }
+
+        public async Task<CompressionResult> DecompressAsync(
+            string inputPath,
+            string outputPath,
+            IProgress<CompressionProgress> progress)
+        {
+            _cancellationSource = new CancellationTokenSource();
+            var token = _cancellationSource.Token;
+
+            _lastInputPath = inputPath;
+            var startTime = DateTime.Now;
+            long inputLength = File.Exists(inputPath) ? new FileInfo(inputPath).Length : 0;
+
+            try
+            {
+                return await Task.Run(() =>
+                {
+                    using (var reader = new AudioFileReader(inputPath))
+                    {
+                        var sampleProvider = reader.ToSampleProvider();
+                        var waveProvider = sampleProvider.ToWaveProvider16();
+
+                        using (var writer = new WaveFileWriter(outputPath, waveProvider.WaveFormat))
+                        {
+                            byte[] buffer = new byte[waveProvider.WaveFormat.AverageBytesPerSecond];
+                            int bytesRead;
+                            long totalBytesWritten = 0;
+                            while ((bytesRead = waveProvider.Read(buffer, 0, buffer.Length)) > 0)
+                            {
+                                token.ThrowIfCancellationRequested();
+                                writer.Write(buffer, 0, bytesRead);
+                                totalBytesWritten += bytesRead;
+
+                                double percentage = inputLength > 0 ? (double)totalBytesWritten / inputLength * 100 : 0;
+                                var elapsed = DateTime.Now - startTime;
+                                double speed = elapsed.TotalSeconds > 0 ? totalBytesWritten / 1024.0 / 1024.0 / elapsed.TotalSeconds : 0;
+                                double ratio = inputLength > 0 ? (double)totalBytesWritten / inputLength : 0;
+                                double bytesPerSec = elapsed.TotalSeconds > 0 ? totalBytesWritten / elapsed.TotalSeconds : 0;
+                                TimeSpan remaining = bytesPerSec > 0 ? TimeSpan.FromSeconds((inputLength - totalBytesWritten) / bytesPerSec) : TimeSpan.Zero;
+
+                                progress?.Report(new CompressionProgress
+                                {
+                                    Percentage = percentage,
+                                    SpeedMBPerSec = speed,
+                                    CurrentCompressionRatio = ratio,
+                                    TimeRemaining = remaining
+                                });
+                            }
+                        }
+
+                        return new CompressionResult
+                        {
+                            OriginalSize = inputLength,
+                            CompressedSize = new FileInfo(outputPath).Length,
+                            CompressionRatio = inputLength > 0 ? (double)new FileInfo(outputPath).Length / inputLength : 0,
+                            ProcessTime = DateTime.Now - startTime
+                        };
+                    }
+                }, token);
+            }
+            finally
+            {
+                _cancellationSource?.Dispose();
+                _cancellationSource = null;
+            }
+        }
+    }
+}

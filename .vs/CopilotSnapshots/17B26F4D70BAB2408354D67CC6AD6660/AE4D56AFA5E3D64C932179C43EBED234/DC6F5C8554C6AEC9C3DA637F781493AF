@@ -1,0 +1,244 @@
+﻿using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using NAudio.Wave;
+using NAudio.Lame;
+using AudioCompressor.Models;
+using NAudio.MediaFoundation;
+using NAudio.Wave.SampleProviders;
+
+
+namespace AudioCompressor.Services
+{
+    public class CompressionProgress
+    {
+        public double Percentage { get; set; }
+        public double SpeedMBPerSec { get; set; }
+        public double CurrentCompressionRatio { get; set; } // حجم المخرج/حجم الإدخال
+        public TimeSpan TimeRemaining { get; set; }
+    }
+
+    public class CompressionResult
+    {
+        public long OriginalSize { get; set; }
+        public long CompressedSize { get; set; }
+        public double CompressionRatio { get; set; }
+        public TimeSpan ProcessTime { get; set; }
+    }
+
+    public class AudioCompressorService
+    {
+        private CancellationTokenSource _cancellationSource;
+
+        public void Cancel() => _cancellationSource?.Cancel();
+
+        public async Task<CompressionResult> CompressAsync(
+            string inputPath,
+            string outputPath,
+            CompressionSettings settings,
+            IProgress<CompressionProgress> progress)
+        {
+            _cancellationSource = new CancellationTokenSource();
+            var token = _cancellationSource.Token;
+
+            return await Task.Run(() =>
+            {
+                using (var reader = new AudioFileReader(inputPath))
+                {
+                    // تحويل الصوت إلى الإعدادات المطلوبة
+                    var outFormat = new WaveFormat(settings.SampleRate, settings.BitDepth, settings.Channels);
+                    // Use a resampling/sample-provider-based approach that doesn't require Media Foundation
+                    // Convert reader to ISampleProvider for flexible conversions
+                    var sampleProvider = reader.ToSampleProvider();
+
+                    // Resample if needed
+                    ISampleProvider resampled = sampleProvider;
+                    if (reader.WaveFormat.SampleRate != settings.SampleRate)
+                    {
+                        resampled = new NAudio.Wave.SampleProviders.WdlResamplingSampleProvider(resampled, settings.SampleRate);
+                    }
+
+                    // Ensure channel count matches
+                    if (resampled.WaveFormat.Channels != settings.Channels)
+                    {
+                        if (settings.Channels == 1)
+                        {
+                            resampled = new NAudio.Wave.SampleProviders.StereoToMonoSampleProvider(resampled);
+                        }
+                        else if (settings.Channels == 2)
+                        {
+                            resampled = new NAudio.Wave.SampleProviders.MonoToStereoSampleProvider(resampled);
+                        }
+                    }
+
+                    // For WaveFileWriter we need an IWaveProvider (16-bit PCM)
+                    var waveProvider16 = resampled.ToWaveProvider16();
+
+                    using (var conversionStream = waveProvider16)
+                    {
+                        long originalLength = reader.Length;
+                        var startTime = DateTime.Now;
+
+                        if (settings.Algorithm == CompressionAlgorithm.MP3)
+                        {
+                            using (var writer = new LameMP3FileWriter(outputPath, outFormat, settings.BitRate))
+                            {
+                                // تنفيذ الضغط مباشرة بدون استدعاء CompressInternal لأن LameMP3FileWriter ليس WaveFileWriter
+                                byte[] buffer = new byte[conversionStream.WaveFormat.AverageBytesPerSecond];
+                                long totalBytesWritten = 0;
+                                int bytesRead;
+                                while ((bytesRead = conversionStream.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    token.ThrowIfCancellationRequested();
+                                    writer.Write(buffer, 0, bytesRead);
+                                    totalBytesWritten += bytesRead;
+
+                                    double percentage = (double)conversionStream.Position / originalLength * 100;
+                                    var elapsed = DateTime.Now - startTime;
+                                    double speed = totalBytesWritten / 1024.0 / 1024.0 / elapsed.TotalSeconds;
+                                    double ratio = (double)totalBytesWritten / conversionStream.Position;
+                                    TimeSpan remaining = elapsed.TotalSeconds > 0
+                                        ? TimeSpan.FromSeconds((originalLength - conversionStream.Position) / (conversionStream.Position / elapsed.TotalSeconds))
+                                        : TimeSpan.Zero;
+
+                                    progress?.Report(new CompressionProgress
+                                    {
+                                        Percentage = percentage,
+                                        SpeedMBPerSec = speed,
+                                        CurrentCompressionRatio = ratio,
+                                        TimeRemaining = remaining
+                                    });
+                                }
+                                return new CompressionResult
+                                {
+                                    OriginalSize = originalLength,
+                                    CompressedSize = new FileInfo(outputPath).Length,
+                                    CompressionRatio = (double)new FileInfo(outputPath).Length / originalLength,
+                                    ProcessTime = DateTime.Now - startTime
+                                };
+                            }
+                        }
+                        else
+                        {
+                            // لخوارزميات ADPCM, DPCM, MuLaw سنستخدم WaveFileWriter مع تنسيق مناسب
+                            WaveFormat targetFormat;
+
+                            switch (settings.Algorithm)
+                            {
+                                case CompressionAlgorithm.ADPCM:
+                                    targetFormat = new WaveFormat(settings.SampleRate, 4, settings.Channels);
+                                    break;
+                                case CompressionAlgorithm.DPCM:
+                                    targetFormat = new WaveFormat(settings.SampleRate, 8, settings.Channels);
+                                    break;
+                                case CompressionAlgorithm.MuLaw:
+                                    targetFormat = WaveFormat.CreateMuLawFormat(settings.SampleRate, settings.Channels);
+                                    break;
+                                default:
+                                    targetFormat = outFormat;
+                                    break;
+                            }
+                            using (var writer = new WaveFileWriter(outputPath, targetFormat))
+                            {
+                                return CompressInternal(conversionStream, writer, originalLength, startTime, progress, token);
+                            }
+                        }
+                    }
+                }
+            }, token);
+        }
+
+        private CompressionResult CompressInternal(
+            WaveStream source,
+            WaveFileWriter writer, // or LameMP3FileWriter, but they share Write method
+            long originalLength,
+            DateTime startTime,
+            IProgress<CompressionProgress> progress,
+            CancellationToken token)
+        {
+            byte[] buffer = new byte[source.WaveFormat.AverageBytesPerSecond];
+            long totalBytesWritten = 0;
+            int bytesRead;
+
+            while ((bytesRead = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                writer.Write(buffer, 0, bytesRead);
+                totalBytesWritten += bytesRead;
+
+                double percentage = (double)source.Position / originalLength * 100;
+                var elapsed = DateTime.Now - startTime;
+                double speed = totalBytesWritten / 1024.0 / 1024.0 / elapsed.TotalSeconds;
+                double ratio = (double)totalBytesWritten / source.Position;
+                TimeSpan remaining = elapsed.TotalSeconds > 0
+                    ? TimeSpan.FromSeconds((originalLength - source.Position) / (source.Position / elapsed.TotalSeconds))
+                    : TimeSpan.Zero;
+
+                progress?.Report(new CompressionProgress
+                {
+                    Percentage = percentage,
+                    SpeedMBPerSec = speed,
+                    CurrentCompressionRatio = ratio,
+                    TimeRemaining = remaining
+                });
+            }
+
+            return new CompressionResult
+            {
+                OriginalSize = originalLength,
+                CompressedSize = new FileInfo(writer.Filename).Length,
+                CompressionRatio = (double)new FileInfo(writer.Filename).Length / originalLength,
+                ProcessTime = DateTime.Now - startTime
+            };
+        }
+
+        // فك الضغط إلى WAV
+        public async Task<CompressionResult> DecompressAsync(
+            string inputPath,
+            string outputPath,
+            IProgress<CompressionProgress> progress)
+        {
+            return await Task.Run(() =>
+            {
+                using (var reader = new AudioFileReader(inputPath))
+                {
+                    var pcmFormat = new WaveFormat(reader.WaveFormat.SampleRate, 16, reader.WaveFormat.Channels);
+                    using (var writer = new WaveFileWriter(outputPath, pcmFormat))
+                    {
+                        long originalLength = reader.Length;
+                        byte[] buffer = new byte[reader.WaveFormat.AverageBytesPerSecond];
+                        long totalBytesWritten = 0;
+                        int bytesRead;
+                        var startTime = DateTime.Now;
+
+                        while ((bytesRead = reader.Read(buffer, 0, buffer.Length)) > 0)
+                        {
+                            writer.Write(buffer, 0, bytesRead);
+                            totalBytesWritten += bytesRead;
+                            double percentage = (double)reader.Position / originalLength * 100;
+                            var elapsed = DateTime.Now - startTime;
+                            double speed = totalBytesWritten / 1024.0 / 1024.0 / elapsed.TotalSeconds;
+                            progress?.Report(new CompressionProgress
+                            {
+                                Percentage = percentage,
+                                SpeedMBPerSec = speed,
+                                TimeRemaining = elapsed.TotalSeconds > 0
+                                    ? TimeSpan.FromSeconds((originalLength - reader.Position) / (reader.Position / elapsed.TotalSeconds))
+                                    : TimeSpan.Zero
+                            });
+                        }
+
+                        return new CompressionResult
+                        {
+                            OriginalSize = originalLength,
+                            CompressedSize = new FileInfo(outputPath).Length,
+                            CompressionRatio = (double)new FileInfo(outputPath).Length / originalLength,
+                            ProcessTime = DateTime.Now - startTime
+                        };
+                    }
+                }
+            });
+        }
+    }
+}
