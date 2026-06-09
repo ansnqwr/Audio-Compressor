@@ -2,12 +2,14 @@
 using AudioCompressor.Models;
 using AudioCompressor.Services;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-
 namespace AudioCompressor
 {
     public partial class MainForm : Form
@@ -30,6 +32,8 @@ namespace AudioCompressor
         private NumericUpDown nudBitRate, nudSampleRate, nudBitDepth, nudChannels;
         private ProgressBar progressBar;
         private Label lblStatus, lblProgressPercent;
+
+        private string[] originalProperties;
         public MainForm()
         {
             InitializeComponent();
@@ -233,6 +237,21 @@ namespace AudioCompressor
             };
             groupCompression.Controls.Add(lblBitRate);
             groupCompression.Controls.Add(nudBitRate);
+
+            List<String> list = new List<String>();
+
+            list.Add("Algorithm:" + cmbAlgorithm.Items[cmbAlgorithm.SelectedIndex]);
+            list.Add("Sample Rate:" + nudSampleRate.Value);
+            list.Add("Bit Depth:" + nudBitDepth.Value);
+            list.Add("Channels:" + nudChannels.Value);
+            list.Add("Bit Rate:" + nudBitRate.Value);
+
+            originalProperties = list.ToArray();
+
+
+
+            foreach (string element in originalProperties)
+                Debug.WriteLine(element);
 
             // مراقبة الأداء
             groupPerformance = new GroupBox
@@ -692,6 +711,56 @@ namespace AudioCompressor
                 lblSpeedValue.Text = "0.00 MB/s";
                 lblRatioValue.Text = "0%";
                 lblTimeRemainingValue.Text = "--";
+
+                string originalAlgo = "";
+                int originalSampleRate = 0;
+                int originalBitDepth = 0;
+                int originalChannels = 0;
+                int originalBitRate = 0;
+
+                foreach(string element in originalProperties)
+                {
+                    if(element.StartsWith("Algorithm:"))
+                    {
+                        originalAlgo = element.Substring(10);
+                        Debug.WriteLine("FOUND ALGO: " + originalAlgo);
+                    }
+                    else if(element.StartsWith("Sample Rate:"))
+                    {
+                        originalSampleRate = int.Parse(element.Substring(12));
+                        Debug.WriteLine("FOUND SAMPLE RATE: " + originalSampleRate);
+                    }
+                    else if (element.StartsWith("Bit Depth:"))
+                    {
+                        originalBitDepth = int.Parse(element.Substring(10));
+                        Debug.WriteLine("FOUND BIT DEPTH: " + originalBitDepth);
+                    }
+                    else if (element.StartsWith("Channels:"))
+                    {
+                        originalChannels = int.Parse(element.Substring(9));
+                        Debug.WriteLine("FOUND CHANNELS: " + originalChannels);
+                    }
+                    else if (element.StartsWith("Bit Rate:"))
+                    {
+                        originalBitRate = int.Parse(element.Substring(9));
+                        Debug.WriteLine("FOUND BIT RATE: " + originalBitRate);
+                    }
+                }
+
+                foreach(string element in cmbAlgorithm.Items)
+                {
+                    if (element == originalAlgo)
+                    {
+                        cmbAlgorithm.SelectedIndex = cmbAlgorithm.Items.IndexOf(element);
+                        break;
+                    }
+                }
+
+                nudSampleRate.Value = originalSampleRate;
+                nudBitDepth.Value = originalBitDepth;
+                nudChannels.Value = originalChannels;
+                nudBitRate.Value = originalBitRate;
+
             }
             catch (Exception ex)
             {
