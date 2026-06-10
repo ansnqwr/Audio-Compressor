@@ -13,6 +13,8 @@ namespace AudioCompressor
             get => SpeedMBps;
             set => SpeedMBps = value;
         }
+
+        public TimeSpan TimeRemaining { get; set; } = TimeSpan.FromSeconds(0);
         public double CurrentCompressionRatio { get; set; } 
         public TimeSpan ElapsedTime { get; set; }
         public TimeSpan EstimatedRemaining { get; set; }

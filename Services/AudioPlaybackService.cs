@@ -11,20 +11,6 @@ namespace AudioCompressor.Services
         public bool IsPlaying => _waveOut != null && _waveOut.PlaybackState == PlaybackState.Playing;
         public event EventHandler PlaybackStopped;
 
-        public long Position
-        {
-            get => _audioReader?.Position ?? 0;
-            set
-            {
-                if (_audioReader != null)
-                    _audioReader.Position = value;
-            }
-        }
-
-        public long Length => _audioReader?.Length ?? 0;
-
-        public bool IsFinished => Position >= Length && Length > 0;
-
         public void Load(string filePath)
         {
             StopAndDispose();
@@ -36,11 +22,6 @@ namespace AudioCompressor.Services
 
         public void Play()
         {
-            if (IsFinished)
-            {
-                Position = 0;
-            }
-
             if (_waveOut != null && (_waveOut.PlaybackState == PlaybackState.Paused || _waveOut.PlaybackState == PlaybackState.Stopped))
                 _waveOut.Play();
         }

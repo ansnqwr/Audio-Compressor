@@ -1,23 +1,21 @@
-﻿using AudioCompressor.Helpers;
-using AudioCompressor.Models;
-using AudioCompressor.Services;
+﻿
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Drawing;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using AudioCompressor.Helpers;
+using AudioCompressor.Models;
+using AudioCompressor.Services;
+
 namespace AudioCompressor
 {
     public partial class MainForm : Form
     {
-
-        private  AudioMetadataService _metadataService;
-        private  AudioPlaybackService _playbackService;
-        private  AudioCompressorService _compressorService;
+        private AudioMetadataService _metadataService;
+        private AudioPlaybackService _playbackService;
+        private AudioCompressorService _compressorService;
 
         private AudioFileInfo _currentAudioInfo;
         private CancellationTokenSource _decompressCts;
@@ -33,15 +31,13 @@ namespace AudioCompressor
         private ProgressBar progressBar;
         private Label lblStatus, lblProgressPercent;
 
-        private string[] originalProperties;
         public MainForm()
         {
-            InitializeComponent();
+            InitializeComponent(); 
             InitializeServices();
             InitializeCustomComponents();
             SetupDragDrop();
             DoubleBuffered = true;
-
         }
 
         private void InitializeServices()
@@ -62,7 +58,6 @@ namespace AudioCompressor
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
 
-            // لوحة السحب والإفلات
             dropPanel = new Panel
             {
                 Location = new Point(20, 20),
@@ -117,7 +112,6 @@ namespace AudioCompressor
                 TextAlign = ContentAlignment.MiddleCenter
             };
 
-            // خصائص الملف
             groupProperties = new GroupBox
             {
                 Text = "خصائص الملف الصوتي",
@@ -134,7 +128,6 @@ namespace AudioCompressor
             AddPropertyRow(groupProperties, "معدل البت:", ref lblBitRateValue, y + 120);
             AddPropertyRow(groupProperties, "نوع الترميز:", ref lblCodecValue, y + 150);
 
-            // أزرار التشغيل
             btnPlay = new RoundedButton
             {
                 Text = "▶ تشغيل",
@@ -155,7 +148,6 @@ namespace AudioCompressor
             };
             btnStop.Click += BtnStop_Click;
 
-            // إعدادات الضغط المتقدمة
             groupCompression = new GroupBox
             {
                 Text = "إعدادات الضغط المتقدمة",
@@ -168,12 +160,12 @@ namespace AudioCompressor
             cmbAlgorithm = new ComboBox
             {
                 Location = new Point(150, 28),
-                Size = new Size(160, 28),
+                Size = new Size(200, 28),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(50, 50, 70),
                 ForeColor = Color.White
             };
-            cmbAlgorithm.Items.AddRange(new[] { "MP3 (LAME)", "ADPCM (Adaptive)", "DPCM (Differential)", "Mu-Law (Non-linear)" });
+            cmbAlgorithm.Items.AddRange(new[] { "MP3 (LAME)", "Mu-Law (Non-linear Quantization)", "DPCM (Differential PCM)", "ADPCM (Adaptive Delta Modulation)" });
             cmbAlgorithm.SelectedIndex = 0;
             cmbAlgorithm.SelectedIndexChanged += (s, e) => nudBitRate.Enabled = cmbAlgorithm.SelectedIndex == 0;
             groupCompression.Controls.Add(lblAlgorithm);
@@ -238,22 +230,6 @@ namespace AudioCompressor
             groupCompression.Controls.Add(lblBitRate);
             groupCompression.Controls.Add(nudBitRate);
 
-            List<String> list = new List<String>();
-
-            list.Add("Algorithm:" + cmbAlgorithm.Items[cmbAlgorithm.SelectedIndex]);
-            list.Add("Sample Rate:" + nudSampleRate.Value);
-            list.Add("Bit Depth:" + nudBitDepth.Value);
-            list.Add("Channels:" + nudChannels.Value);
-            list.Add("Bit Rate:" + nudBitRate.Value);
-
-            originalProperties = list.ToArray();
-
-
-
-            foreach (string element in originalProperties)
-                Debug.WriteLine(element);
-
-            // مراقبة الأداء
             groupPerformance = new GroupBox
             {
                 Text = "مراقبة الأداء (في الزمن الحقيقي)",
@@ -493,12 +469,12 @@ namespace AudioCompressor
                 BitRate = (int)nudBitRate.Value
             };
 
-            string extension = settings.Algorithm == CompressionAlgorithm.MP3 ? ".mp3" : ".wav";
+            // جميع الخوارزميات تنتج ملفات MP3
             using (SaveFileDialog sfd = new SaveFileDialog())
             {
-                sfd.Filter = extension == ".mp3" ? "MP3 files|*.mp3" : "WAV files|*.wav";
+                sfd.Filter = "MP3 files|*.mp3";
                 sfd.Title = $"حفظ الملف المضغوط - {cmbAlgorithm.Text}";
-                sfd.FileName = Path.GetFileNameWithoutExtension(_currentAudioInfo.FileName) + "_compressed" + extension;
+                sfd.FileName = Path.GetFileNameWithoutExtension(_currentAudioInfo.FileName) + "_compressed.mp3";
                 if (sfd.ShowDialog() != DialogResult.OK)
                     return;
 
@@ -519,7 +495,7 @@ namespace AudioCompressor
             lblRatioValue.Text = "0%";
             lblTimeRemainingValue.Text = "--";
 
-            var progress = new Progress<CompressionProgress>(p =>
+            var progress = new Progress<AudioCompressor.Services.CompressionProgress>(p =>
             {
                 if (!string.IsNullOrEmpty(p.ErrorMessage))
                 {
@@ -582,9 +558,9 @@ namespace AudioCompressor
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"فشل الضغط: {ex.Message}", "خطأ", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                lblStatus.Text = "✗ فشل الضغط";
-                lblStatus.ForeColor = Color.Red;
+                //MessageBox.Show($"فشل الضغط: {ex.Message}", "خطأ", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                //lblStatus.Text = "✗ فشل الضغط";
+                //lblStatus.ForeColor = Color.Red;
             }
             finally
             {
@@ -628,13 +604,12 @@ namespace AudioCompressor
                 _decompressCts = new CancellationTokenSource();
                 var token = _decompressCts.Token;
 
-                var progress = new Progress<CompressionProgress>(p =>
+                var progress = new Progress<AudioCompressor.Services.CompressionProgress>(p =>
                 {
                     progressBar.Value = (int)p.Percentage;
                     lblProgressPercent.Text = $"{p.Percentage:F1}%";
                     lblSpeedValue.Text = $"{p.SpeedMBPerSec:F2} MB/s";
                     lblRatioValue.Text = $"{p.CurrentCompressionRatio:F2}:1";
-
                 });
 
                 try
@@ -667,6 +642,7 @@ namespace AudioCompressor
                 }
                 catch (Exception ex)
                 {
+                    Console.WriteLine(ex.ToString());
                     MessageBox.Show($"فشل فك الضغط: {ex.Message}", "خطأ", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     lblStatus.Text = "✗ فشل فك الضغط";
                     lblStatus.ForeColor = Color.Red;
@@ -711,56 +687,11 @@ namespace AudioCompressor
                 lblSpeedValue.Text = "0.00 MB/s";
                 lblRatioValue.Text = "0%";
                 lblTimeRemainingValue.Text = "--";
-
-                string originalAlgo = "";
-                int originalSampleRate = 0;
-                int originalBitDepth = 0;
-                int originalChannels = 0;
-                int originalBitRate = 0;
-
-                foreach(string element in originalProperties)
-                {
-                    if(element.StartsWith("Algorithm:"))
-                    {
-                        originalAlgo = element.Substring(10);
-                        Debug.WriteLine("FOUND ALGO: " + originalAlgo);
-                    }
-                    else if(element.StartsWith("Sample Rate:"))
-                    {
-                        originalSampleRate = int.Parse(element.Substring(12));
-                        Debug.WriteLine("FOUND SAMPLE RATE: " + originalSampleRate);
-                    }
-                    else if (element.StartsWith("Bit Depth:"))
-                    {
-                        originalBitDepth = int.Parse(element.Substring(10));
-                        Debug.WriteLine("FOUND BIT DEPTH: " + originalBitDepth);
-                    }
-                    else if (element.StartsWith("Channels:"))
-                    {
-                        originalChannels = int.Parse(element.Substring(9));
-                        Debug.WriteLine("FOUND CHANNELS: " + originalChannels);
-                    }
-                    else if (element.StartsWith("Bit Rate:"))
-                    {
-                        originalBitRate = int.Parse(element.Substring(9));
-                        Debug.WriteLine("FOUND BIT RATE: " + originalBitRate);
-                    }
-                }
-
-                foreach(string element in cmbAlgorithm.Items)
-                {
-                    if (element == originalAlgo)
-                    {
-                        cmbAlgorithm.SelectedIndex = cmbAlgorithm.Items.IndexOf(element);
-                        break;
-                    }
-                }
-
-                nudSampleRate.Value = originalSampleRate;
-                nudBitDepth.Value = originalBitDepth;
-                nudChannels.Value = originalChannels;
-                nudBitRate.Value = originalBitRate;
-
+                nudBitDepth.Value = 16;
+                nudBitRate.Value = 128;
+                nudChannels.Value = 2;
+                nudSampleRate.Value = 44100;
+                cmbAlgorithm.SelectedIndex = 0;
             }
             catch (Exception ex)
             {
@@ -783,12 +714,15 @@ namespace AudioCompressor
             return $"{len:0.##} {sizes[order]}";
         }
 
-        protected override void OnFormClosed(FormClosedEventArgs e)
-        {
-            _playbackService.Dispose();
-            base.OnFormClosed(e);
-        }
+
     }
 }
-    
+
+
+
+
+
+
+
+
 
