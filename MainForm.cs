@@ -50,7 +50,7 @@ namespace AudioCompressor
 
         private void InitializeCustomComponents()
         {
-            this.Text = "ضاغط الصوت الاحترافي - Professional Audio Compressor";
+            this.Text = "Professional Audio Compressor";
             this.Size = new Size(1000, 720);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = Color.FromArgb(28, 28, 35);

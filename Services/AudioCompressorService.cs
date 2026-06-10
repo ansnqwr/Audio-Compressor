@@ -34,10 +34,10 @@ namespace AudioCompressor.Services
         public void Cancel() => _cancellationSource?.Cancel();
 
         public async Task<CompressionResult> CompressAsync(
-            string inputPath,
-            string outputPath,
-            CompressionSettings settings,
-            IProgress<CompressionProgress> progress)
+      string inputPath,
+      string outputPath,
+      CompressionSettings settings,
+      IProgress<CompressionProgress> progress)
         {
             _cancellationSource = new CancellationTokenSource();
             var token = _cancellationSource.Token;
@@ -46,9 +46,11 @@ namespace AudioCompressor.Services
             {
                 try
                 {
+                    long originalFileSize = new FileInfo(inputPath).Length;
+
                     using (var reader = new AudioFileReader(inputPath))
                     {
-                        long originalLength = reader.Length;
+                        long pcmDataLength = reader.Length;
                         var startTime = DateTime.Now;
 
                         int effectiveBitRate;
@@ -92,12 +94,12 @@ namespace AudioCompressor.Services
                                 writer.Write(buffer, 0, bytesRead);
                                 totalBytesWritten += bytesRead;
 
-                                double percentage = (double)reader.Position / originalLength * 100;
+                                double percentage = (double)reader.Position / pcmDataLength * 100;
                                 var elapsed = DateTime.Now - startTime;
                                 double speed = totalBytesWritten / 1024.0 / 1024.0 / elapsed.TotalSeconds;
                                 double ratio = (double)totalBytesWritten / reader.Position;
                                 TimeSpan remaining = elapsed.TotalSeconds > 0
-                                    ? TimeSpan.FromSeconds((originalLength - reader.Position) / (reader.Position / elapsed.TotalSeconds))
+                                    ? TimeSpan.FromSeconds((pcmDataLength - reader.Position) / (reader.Position / elapsed.TotalSeconds))
                                     : TimeSpan.Zero;
 
                                 progress?.Report(new CompressionProgress
@@ -110,12 +112,14 @@ namespace AudioCompressor.Services
                             }
                         }
 
+                        long compressedFileSize = new FileInfo(outputPath).Length;
+
                         return new CompressionResult
                         {
                             Success = true,
-                            OriginalSize = originalLength,
-                            CompressedSize = new FileInfo(outputPath).Length,
-                            CompressionRatio = (double)new FileInfo(outputPath).Length / originalLength,
+                            OriginalSize = originalFileSize,     
+                            CompressedSize = compressedFileSize,   
+                            CompressionRatio = (double)compressedFileSize / originalFileSize, 
                             ProcessTime = DateTime.Now - startTime
                         };
                     }
